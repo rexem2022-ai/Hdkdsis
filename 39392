@@ -1,0 +1,596 @@
+if _G.MockTradeScriptLoaded then
+return
+end
+_G.MockTradeScriptLoaded = true
+local Services = {
+Players = game:GetService('Players'),
+ReplicatedStorage = game:GetService('ReplicatedStorage'),
+RunService = game:GetService('RunService'),
+UserInputService = game:GetService('UserInputService'),
+TweenService = game:GetService('TweenService'),
+HttpService = game:GetService('HttpService'),
+Chat = game:GetService('Chat'),
+StarterGui = game:GetService('StarterGui'),
+GuiService = game:GetService('GuiService'),
+VirtualInputManager = game:GetService('VirtualInputManager'),
+CoreGui = game:GetService('CoreGui')
+}
+pcall(function()
+setthreadidentity(2)
+end)
+local fakePlayerIds = {}
+_G.fakePlayerIds = fakePlayerIds
+task.spawn(function()
+task.wait(0.1)
+pcall(function()
+local SettingsHelper = require(Services.ReplicatedStorage:WaitForChild('Fsys')).load('SettingsHelper')
+local original_get_setting_server = SettingsHelper.get_setting_server
+SettingsHelper.get_setting_server = function(player, settingName, ...)
+if player and player.UserId then
+if fakePlayerIds[player.UserId] then return false end
+if not Services.Players:GetPlayerByUserId(player.UserId) then return false end
+end
+local args = { ... }
+local success, result = pcall(function()
+return original_get_setting_server(player, settingName, table.unpack(args))
+end)
+if success then return result else return false end
+end
+end)
+end)
+task.spawn(function()
+task.wait(0.1)
+pcall(function()
+local FamilyHelper = require(Services.ReplicatedStorage:WaitForChild('Fsys')).load('FamilyHelper')
+local original_are_friends_family = FamilyHelper.are_friends_family
+local original_is_my_friend_or_family = FamilyHelper.is_my_friend_or_family
+local original_are_family_because_friends = FamilyHelper.are_family_because_friends
+local original_is_my_family_because_friend = FamilyHelper.is_my_family_because_friend
+FamilyHelper.are_friends_family = function(player1, player2)
+if player1 and player2 and (fakePlayerIds[player1.UserId] or fakePlayerIds[player2.UserId]) then return false end
+return original_are_friends_family(player1, player2)
+end
+FamilyHelper.is_my_friend_or_family = function(player)
+if player and fakePlayerIds[player.UserId] then return false end
+return original_is_my_friend_or_family(player)
+end
+FamilyHelper.are_family_because_friends = function(player1, player2)
+if player1 and player2 and (fakePlayerIds[player1.UserId] or fakePlayerIds[player2.UserId]) then return false end
+return original_are_family_because_friends(player1, player2)
+end
+FamilyHelper.is_my_family_because_friend = function(player)
+if player and fakePlayerIds[player.UserId] then return false end
+return original_is_my_family_because_friend(player)
+end
+end)
+end)
+local Fsys = require(Services.ReplicatedStorage:WaitForChild('Fsys'))
+local Modules = {
+UIManager = Fsys.load('UIManager'),
+ClientData = Fsys.load('ClientData'),
+TableUtil = Fsys.load('TableUtil'),
+RouterClient = Fsys.load('RouterClient'),
+InventoryDB = Fsys.load('InventoryDB'),
+animationManager = Fsys.load('AnimationManager'),
+ColorThemeManager = Fsys.load('ColorThemeManager')
+}
+if Modules.UIManager and Modules.UIManager.wait_for_initialization then
+Modules.UIManager:wait_for_initialization()
+else
+task.wait(1)
+end
+local Apps = {
+TradeApp = Modules.UIManager.apps.TradeApp,
+BackpackApp = Modules.UIManager.apps.BackpackApp,
+DialogApp = Modules.UIManager.apps.DialogApp,
+HintApp = Modules.UIManager.apps.HintApp,
+SettingsApp = Modules.UIManager.apps.SettingsApp,
+PlayerProfileApp = Modules.UIManager.apps.PlayerProfileApp,
+TradeHistoryApp = Modules.UIManager.apps.TradeHistoryApp,
+TradePreviewApp = Modules.UIManager.apps.TradePreviewApp
+}
+local NegotiationFrame = Services.Players.LocalPlayer.PlayerGui:WaitForChild("TradeApp"):WaitForChild("Frame"):WaitForChild("NegotiationFrame")
+local ConfirmationFrame = Services.Players.LocalPlayer.PlayerGui.TradeApp.Frame:WaitForChild("ConfirmationFrame")
+do
+local originalDialog = Apps.DialogApp.dialog
+Apps.DialogApp.dialog = function(self, data, ...)
+if data and data.text then
+data.text = data.text:gsub("suggestion", "boost"):gsub("Suggestion", "Boost"):gsub("suggest", "boost"):gsub("Suggest", "Boost")
+end
+if data and data.right then
+data.right = data.right:gsub("Suggest", "Boost")
+end
+if data and data.left then
+data.left = data.left:gsub("Suggest", "Boost")
+end
+return originalDialog(self, data, ...)
+end
+end
+local function FriendHighlight(FriendValue)
+pcall(function()
+local nf = NegotiationFrame
+if not nf or not nf.Parent then return end
+if nf:FindFirstChild("FriendHighlight") then
+nf.FriendHighlight.Visible = FriendValue
+end
+if nf:FindFirstChild("FriendBorder") then
+nf.FriendBorder.Visible = FriendValue
+end
+local pf = nf.Header and nf.Header.PartnerFrame
+if pf then
+if pf.NameLabel and pf.NameLabel:FindFirstChild("FriendLabel") then
+pf.NameLabel.FriendLabel.Visible = FriendValue
+end
+local ColorThemeManagerColor = Modules.ColorThemeManager.lookup(FriendValue and 'background' or 'saturated')
+if pf.ProfileIcon then pf.ProfileIcon.ImageColor3 = ColorThemeManagerColor end
+if pf.NameLabel then
+pf.NameLabel.TextColor3 = ColorThemeManagerColor
+if mockState and mockState.active and CONFIG and CONFIG.PARTNER_NAME then
+pf.NameLabel.Text = CONFIG.PARTNER_NAME
+end
+end
+if pf.Icon then
+pf.Icon.Visible = FriendValue
+pf.Icon.Image = 'rbxassetid://84667805159408'
+end
+end
+if Apps.TradeApp and Apps.TradeApp.confirmation_partner_icon then
+Apps.TradeApp.confirmation_partner_icon.Image = FriendValue and 'rbxassetid://84667805159408' or ''
+Apps.TradeApp.confirmation_partner_icon.Visible = FriendValue
+end
+end)
+end
+-- Throttled highlight rendering to prevent lag spikes
+local lastHighlightCheck = 0
+Services.RunService.RenderStepped:Connect(function(dt)
+lastHighlightCheck = lastHighlightCheck + dt
+if lastHighlightCheck >= 0.1 then
+lastHighlightCheck = 0
+if mockState and mockState.active and mockState.trade then
+pcall(function() FriendHighlight(true) end)
+end
+end
+end)
+do
+local originalRemotes = {}
+local routerInit
+local routerInitIdx
+for idx = 1, 30 do
+local ok, val = pcall(debug.getupvalue, Modules.RouterClient.init, idx)
+if ok and type(val) == "table" then
+local isRemoteTable = false
+for _, entry in pairs(val) do
+if typeof(entry) == "Instance" and (entry:IsA("RemoteFunction") or entry:IsA("RemoteEvent")) then
+isRemoteTable = true
+break
+end
+end
+if isRemoteTable then
+routerInit = val
+routerInitIdx = idx
+break
+end
+end
+end
+if routerInit then
+for i, v in pairs(routerInit) do
+v.Name = i
+originalRemotes[i] = v
+end
+local spawnToys = Modules.ClientData.get("inventory").toys
+local spawnLicenseUniqueId
+for i, v in pairs(spawnToys) do
+if v.id == "trade_license" then
+spawnLicenseUniqueId = i
+break
+end
+end
+local function hookedEquip(player, uniqueId, ...)
+if uniqueId == spawnLicenseUniqueId then
+Modules.UIManager.set_app_visibility("TradeHistoryApp", true)
+end
+return originalRemotes["ToolAPI/Equip"](player, uniqueId, ...)
+end
+local function hookedUnequip(player, uniqueId)
+if uniqueId == spawnLicenseUniqueId then
+Modules.UIManager.set_app_visibility("TradeHistoryApp", false)
+end
+return originalRemotes["ToolAPI/Unequip"](player, uniqueId)
+end
+pcall(debug.setupvalue, Modules.RouterClient.init, routerInitIdx,
+setmetatable({
+["ToolAPI/Equip"] = hookedEquip,
+["ToolAPI/Unequip"] = hookedUnequip
+}, {
+__index = originalRemotes,
+__newindex = function(t, k, v)
+if k == "ToolAPI/Equip" or k == "ToolAPI/Unequip" then
+rawset(t, k, v)
+else
+originalRemotes[k] = v
+end
+end
+})
+)
+end
+end
+do
+if Apps.TradeHistoryApp._ORIGINAL_create_trade_frame then
+Apps.TradeHistoryApp._create_trade_frame = Apps.TradeHistoryApp._ORIGINAL_create_trade_frame
+end
+if Apps.TradeApp._ORIGINAL_change_local_trade_state then
+Apps.TradeApp._change_local_trade_state = Apps.TradeApp._ORIGINAL_change_local_trade_state
+end
+if Apps.TradeApp._ORIGINAL_overwrite_local_trade_state then
+Apps.TradeApp._overwrite_local_trade_state = Apps.TradeApp._ORIGINAL_overwrite_local_trade_state
+end
+Apps.TradeHistoryApp._ORIGINAL_create_trade_frame = Apps.TradeHistoryApp._create_trade_frame
+Apps.TradeApp._ORIGINAL_change_local_trade_state = Apps.TradeApp._change_local_trade_state
+Apps.TradeApp._ORIGINAL_overwrite_local_trade_state = Apps.TradeApp._overwrite_local_trade_state
+local spawnTradeOffers = {}
+Apps.TradeApp._change_local_trade_state = function(self, change, ...)
+local state = self:_get_local_trade_state()
+if state and state.trade_id then
+if state.sender == Services.Players.LocalPlayer and change.sender_offer then
+spawnTradeOffers[state.trade_id] = {
+items = table.clone(change.sender_offer.items),
+isSender = true
+}
+elseif state.recipient == Services.Players.LocalPlayer and change.recipient_offer then
+spawnTradeOffers[state.trade_id] = {
+items = table.clone(change.recipient_offer.items),
+isSender = false
+}
+end
+end
+return Apps.TradeApp._ORIGINAL_change_local_trade_state(self, change, ...)
+end
+Apps.TradeApp._overwrite_local_trade_state = function(self, trade, ...)
+if not trade and Apps.TradeApp._last_trade_id then
+spawnTradeOffers[Apps.TradeApp._last_trade_id] = nil
+end
+return Apps.TradeApp._ORIGINAL_overwrite_local_trade_state(self, trade, ...)
+end
+Apps.TradeHistoryApp._create_trade_frame = function(self, tradeData, ...)
+if tradeData.trade_id and spawnTradeOffers[tradeData.trade_id] then
+local offer = spawnTradeOffers[tradeData.trade_id]
+local modified = table.clone(tradeData)
+if offer.isSender then
+modified.sender_items = table.clone(offer.items)
+else
+modified.recipient_items = table.clone(offer.items)
+end
+return self._ORIGINAL_create_trade_frame(self, modified, ...)
+end
+return self._ORIGINAL_create_trade_frame(self, tradeData, ...)
+end
+end
+do
+local spawnData
+local _spawnOverwrite = Modules.UIManager.apps.TradeApp._overwrite_local_trade_state
+Modules.UIManager.apps.TradeApp._overwrite_local_trade_state = function(self, trade, ...)
+if trade then
+local offer = trade.sender == Services.Players.LocalPlayer and trade.sender_offer or trade.recipient == Services.Players.LocalPlayer and trade.recipient_offer
+if offer then
+if spawnData then offer.items = spawnData end
+end
+else
+spawnData = nil
+end
+return _spawnOverwrite(self, trade, ...)
+end
+local _spawnChange = Modules.UIManager.apps.TradeApp._change_local_trade_state
+Modules.UIManager.apps.TradeApp._change_local_trade_state = function(self, change, ...)
+local trade = Modules.UIManager.apps.TradeApp.local_trade_state
+if trade then
+local team = trade.sender == Services.Players.LocalPlayer and "sender_offer" or trade.recipient == Services.Players.LocalPlayer and "recipient_offer"
+if team then
+local offer = change[team]
+if offer and offer.items then spawnData = offer.items end
+end
+end
+return _spawnChange(self, change, ...)
+end
+end
+local PetData = {}
+PetData.downloader = Fsys.load('DownloadClient')
+PetData.petModels = {}
+local function getPetModel(kind)
+if PetData.petModels[kind] then return PetData.petModels[kind]:Clone() end
+local success, streamed = pcall(function()
+local promise = PetData.downloader.promise_download_copy('Pets', kind)
+if promise then return promise:expect() end
+return nil
+end)
+if success and streamed then
+PetData.petModels[kind] = streamed
+return streamed:Clone()
+else
+return nil
+end
+end
+if not Apps.TradeApp then return end
+PetData.petDisplayNames = {}
+for category, items in pairs(Modules.InventoryDB) do
+if category == "pets" then
+for id, petinfo in pairs(items) do
+PetData.petDisplayNames[id] = petinfo.name
+end
+end
+end
+local fallbackPetValues = {
+["Bat Dragon"] = {name = "Bat Dragon", ["rvalue - nopotion"] = 503, ["rvalue - fly&ride"] = 491, ["nvalue - fly&ride"] = 1280, ["mvalue - fly&ride"] = 3620},
+["Shadow Dragon"] = {name = "Shadow Dragon", ["rvalue - nopotion"] = 473, ["rvalue - fly&ride"] = 331, ["nvalue - fly&ride"] = 777, ["mvalue - fly&ride"] = 1950},
+["Giraffe"] = {name = "Giraffe", ["rvalue - nopotion"] = 230, ["rvalue - fly&ride"] = 220, ["nvalue - fly&ride"] = 536, ["mvalue - fly&ride"] = 1870},
+["Frost Dragon"] = {name = "Frost Dragon", ["rvalue - nopotion"] = 181, ["rvalue - fly&ride"] = 170, ["nvalue - fly&ride"] = 361, ["mvalue - fly&ride"] = 1050},
+["Owl"] = {name = "Owl", ["rvalue - nopotion"] = 144, ["rvalue - fly&ride"] = 142, ["nvalue - fly&ride"] = 389, ["mvalue - fly&ride"] = 1430},
+["Parrot"] = {name = "Parrot", ["rvalue - nopotion"] = 112.5, ["rvalue - fly&ride"] = 111.5, ["nvalue - fly&ride"] = 242, ["mvalue - fly&ride"] = 840},
+["Crow"] = {name = "Crow", ["rvalue - nopotion"] = 93, ["rvalue - fly&ride"] = 92.5, ["nvalue - fly&ride"] = 233, ["mvalue - fly&ride"] = 920},
+["Evil Unicorn"] = {name = "Evil Unicorn", ["rvalue - nopotion"] = 80.5, ["rvalue - fly&ride"] = 80, ["nvalue - fly&ride"] = 174, ["mvalue - fly&ride"] = 670},
+["African Wild Dog"] = {name = "African Wild Dog", ["rvalue - nopotion"] = 57, ["rvalue - fly&ride"] = 58, ["nvalue - fly&ride"] = 192, ["mvalue - fly&ride"] = 720},
+["Hedgehog"] = {name = "Hedgehog", ["rvalue - nopotion"] = 53.5, ["rvalue - fly&ride"] = 54, ["nvalue - fly&ride"] = 182, ["mvalue - fly&ride"] = 705},
+["Balloon Unicorn"] = {name = "Balloon Unicorn", ["rvalue - nopotion"] = 51.5, ["rvalue - fly&ride"] = 53, ["nvalue - fly&ride"] = 186, ["mvalue - fly&ride"] = 730},
+["Diamond Butterfly"] = {name = "Diamond Butterfly", ["rvalue - nopotion"] = 51, ["rvalue - fly&ride"] = 49, ["nvalue - fly&ride"] = 160, ["mvalue - fly&ride"] = 565},
+["Blazing Lion"] = {name = "Blazing Lion", ["rvalue - nopotion"] = 46, ["rvalue - fly&ride"] = 48, ["nvalue - fly&ride"] = 175, ["mvalue - fly&ride"] = 708},
+["Orchid Butterfly"] = {name = "Orchid Butterfly", ["rvalue - nopotion"] = 44, ["rvalue - fly&ride"] = 45, ["nvalue - fly&ride"] = 183, ["mvalue - fly&ride"] = 735},
+["Dalmatian"] = {name = "Dalmatian", ["rvalue - nopotion"] = 43.5, ["rvalue - fly&ride"] = 44, ["nvalue - fly&ride"] = 134, ["mvalue - fly&ride"] = 490},
+["Arctic Reindeer"] = {name = "Arctic Reindeer", ["rvalue - nopotion"] = 39, ["rvalue - fly&ride"] = 38, ["nvalue - fly&ride"] = 80, ["mvalue - fly&ride"] = 302},
+["Giant Panda"] = {name = "Giant Panda", ["rvalue - nopotion"] = 35, ["rvalue - fly&ride"] = 35, ["nvalue - fly&ride"] = 155, ["mvalue - fly&ride"] = 650},
+["Cow"] = {name = "Cow", ["rvalue - nopotion"] = 23, ["rvalue - fly&ride"] = 25.5, ["nvalue - fly&ride"] = 58.5, ["mvalue - fly&ride"] = 212},
+["Turtle"] = {name = "Turtle", ["rvalue - nopotion"] = 20, ["rvalue - fly&ride"] = 22.5, ["nvalue - fly&ride"] = 48.5, ["mvalue - fly&ride"] = 128.5},
+["Kangaroo"] = {name = "Kangaroo", ["rvalue - nopotion"] = 15, ["rvalue - fly&ride"] = 16.5, ["nvalue - fly&ride"] = 36, ["mvalue - fly&ride"] = 101.5},
+["Unicorn"] = {name = "Unicorn", ["rvalue - nopotion"] = 3, ["rvalue - fly&ride"] = 4, ["nvalue - fly&ride"] = 15, ["mvalue - fly&ride"] = 44},
+}
+local function fetchPetValues()
+local req = (syn and syn.request) or (http and http.request) or http_request or request
+if not req then return fallbackPetValues end
+local success, response = pcall(function()
+return req({
+Url = "https://elvebredd.com/api/pets/get-latest",
+Method = "GET",
+Headers = {
+["Accept"] = "/",
+["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+["Referer"] = "https://elvebredd.com/adopt-me-calculator"
+}
+})
+end)
+if success and response and response.Success then
+local decodeSuccess, responseData = pcall(function()
+return Services.HttpService:JSONDecode(response.Body)
+end)
+if decodeSuccess and responseData and responseData.pets then
+local petsSuccess, petsData = pcall(function()
+return Services.HttpService:JSONDecode(responseData.pets)
+end)
+if petsSuccess and petsData and next(petsData) then
+return petsData
+end
+end
+end
+return fallbackPetValues
+end
+PetData.petsByName = {}
+PetData.petValues = fetchPetValues()
+for key, pet in pairs(PetData.petValues) do
+if type(pet) == "table" and pet.name then
+PetData.petsByName[pet.name] = pet
+end
+end
+local function getPetValue(petKind, petProps)
+local displayName = PetData.petDisplayNames[petKind] or petKind
+local pet = PetData.petsByName[displayName]
+local defaultValues = {
+["rvalue - nopotion"] = 0.1,
+["rvalue - fly&ride"] = 0.5,
+["nvalue - fly&ride"] = 2,
+["mvalue - fly&ride"] = 8
+}
+if not pet then pet = defaultValues end
+local baseKey = petProps.mega_neon and "mvalue" or (petProps.neon and "nvalue" or "rvalue")
+local suffix = (petProps.rideable and petProps.flyable) and " - fly&ride" or (petProps.rideable and " - ride" or (petProps.flyable and " - fly" or " - nopotion"))
+local key = baseKey .. suffix
+local value = pet[key]
+if not value then
+if suffix == " - fly" or suffix == " - ride" then
+value = pet[baseKey .. " - fly&ride"] or pet[baseKey .. " - nopotion"]
+end
+if not value and (baseKey == "nvalue" or baseKey == "mvalue") then
+value = pet[baseKey .. " - fly&ride"]
+end
+if not value then
+value = pet[baseKey .. " - nopotion"] or pet[baseKey] or defaultValues[baseKey .. " - fly&ride"] or 0.1
+end
+end
+return value or 0.1
+end
+local function processRawProfileData(rawData)
+if not rawData then return nil end
+local processed = { pages = {}, stickers = {}, properties = rawData.properties or {} }
+if rawData.pages then
+for _, page in ipairs(rawData.pages) do
+local pageIndex = page.page_index
+processed.stickers[pageIndex] = page.stickers
+processed.pages[pageIndex] = {}
+if page.widgets then
+for _, widget in ipairs(page.widgets) do
+processed.pages[pageIndex][widget.slot] = widget.data
+end
+end
+end
+end
+return processed
+end
+local function extractAllPets(profileData)
+local pets = {}
+if profileData and profileData.pages then
+for pageIndex, page in pairs(profileData.pages) do
+for slotIndex, slotData in pairs(page) do
+if slotData.widget_kind == "collection" and slotData.widget_data and slotData.widget_data.items then
+for _, pet in ipairs(slotData.widget_data.items) do
+local props = pet.properties or {}
+table.insert(pets, {
+kind = pet.kind,
+properties = props,
+displayName = PetData.petDisplayNames[pet.kind] or pet.kind,
+value = getPetValue(pet.kind, props),
+isMega = props.mega_neon or false,
+isNeon = props.neon or false,
+isFly = props.flyable or false,
+isRide = props.rideable or false,
+})
+end
+end
+end
+end
+end
+return pets
+end
+local function formatValue(value)
+if value >= 1000000 then return string.format("%.2fM", value / 1000000)
+elseif value >= 1000 then return string.format("%.1fK", value / 1000)
+elseif value >= 100 then return string.format("%.0f", value)
+else return string.format("%.1f", value) end
+end
+local fetchProfile = Modules.RouterClient.get("PlayerProfileAPI/FetchProfile")
+local CONFIG = {
+PARTNER_NAME = 'endeavor3313',
+PARTNER_USER_ID = 987654321,
+AUTO_ACCEPT_DELAY = 0.2,
+AUTO_CONFIRM_DELAY = 0.3,
+SPECTATOR_COUNT = 4,
+SPECTATOR_VARIATION_MIN = -2,
+SPECTATOR_VARIATION_MAX = 3,
+AUTO_SPECTATE_ENABLED = false,
+AUTO_SPECTATE_INTERVAL = 1.5,
+AUTO_PARTNER = true,
+NEGOTIATION_LOCK = 5,
+CONFIRMATION_LOCK_PER_ITEM = 3,
+SHOW_TRADE_REQUEST = true,
+TRADE_REQUEST_DELAY = 0,
+ADD_PET_REQUEST_DELAY = 0,
+SPAWN_FAKE_PLAYER_WITH_RANDOM_PET = false,
+FAKE_PLAYER_ACCEPT_TRADE_REQUEST = 2,
+CHAT_MESSAGES = {
+'ПРИВЕТ Я ПОДПИСАНА', 'Я ПОДПИСАЛАСЬ НА ТГК', 'я подписался на тгк', 'я подписалась на тгк', 'я подписан', 'я подписана оаоаоао',
+'Did I win?', 'Which one can I spin', 'Omg Its real Thank you so much', 'I am a big fan pls pet',
+'Can i still get gift pls?', 'Can I get a free pet please?', 'I love youre lives btw!',
+'Lose?', 'Win?', 'Thanks!', 'Okay thank you so much for giving back.', 'Yes', 'Thanks',
+'How is youre day so far', 'Yes can i please spin this', 'Which one should i spin',
+'Which one you wanna spin', 'hello', 'Can you offer for my pet', 'Can you add a lot more',
+'THANKS YOU SO MUCH UR TRUSTED', 'Yes bro', 'I got scammed ', 'YOURE LEGIT',
+'Can i please spin this bro', 'Can I think abt the offer', 'Thank u so much',
+'Can I have have a pet since ur doing giveaway', 'pet pls', 'Yes i am followed',
+'Im watching youre live bro', 'can i enter the giveaway',
+},
+AUTO_CHAT_DELAY = 2,
+VERIFIED_FRIENDS = {
+'Agusmareborn', 'Kellyvault', 'J3llynoah', 'Rainbowriley321',
+'Bobazmalibu', 'H3llSANG3LX', 'Xcallmeholly', 'Niniko_201999',
+},
+SHOW_VERIFIED_FRIEND = false,
+FRIEND_PARTNER = true,
+REMOVE_PARTNER_PETS_ON_CONFIRM = false,
+SPIN_THE_WHEEL_ON_ADD = false,
+}
+local ORIGINAL_SPECTATOR_COUNT = CONFIG.SPECTATOR_COUNT
+local mockState = {
+active = false,
+trade = nil,
+isAddingItem = false,
+partnerActionPending = false,
+originalFunctions = {},
+controlPanelOpen = false,
+tradeCompleting = false,
+scamWarningShown = true,
+originalDialogFunction = nil,
+blockedTradeRequests = {},
+tradeHistory = {},
+addedTradeIds = {},
+pendingTradeRequest = false,
+canShowTradeRequest = true,
+tradeRequestBlocked = false,
+removePartnerPetsOnConfirm = false,
+partnerPetsBeforeConfirm = {},
+isMockTradeDialog = false,
+_profileSuggestHandled = false,
+}
+local highValuePets = {
+'Shadow Dragon', 'Bat Dragon', 'Frost Dragon', 'Giraffe', 'Owl',
+'Parrot', 'Crow', 'Evil Unicorn'
+}
+local completePetList = {
+'Shadow Dragon', 'Bat Dragon', 'Frost Dragon', 'Giraffe', 'Owl', 'Parrot', 'Crow',
+'Evil Unicorn', 'Arctic Reindeer', 'Hedgehog', 'Dalmatian', 'Turtle', 'Kangaroo',
+'Lion', 'Elephant', 'Rhino', 'Chocolate Chip Bat Dragon', 'Cow', 'Blazing Lion',
+'African Wild Dog', 'Flamingo', 'Diamond Butterfly', 'Mini Pig', 'Caterpillar',
+'Albino Monkey', 'Candyfloss Chick', 'Pelican', 'Blue Dog', 'Pink Cat', 'Haetae',
+'Peppermint Penguin', 'Winged Tiger', 'Sugar Glider', 'Shark Puppy', 'Goat',
+'Sheeeeep', 'Lion Cub', 'Nessie', 'Flamingo', 'Frostbite Bear', 'Balloon Unicorn',
+'Honey Badger', 'Hot Doggo', 'Crocodile', 'Hare', 'Ram', 'Yeti', 'Meetkat',
+'Jellyfish', 'Happy Clown', 'Orchid Butterfly', 'Many Mackerel',
+'Strawberry Shortcake Bat Dragon', 'Zombie Buffalo', 'Fairy Bat Dragon',
+}
+local customUsers = {
+'Agusmareborn', 'Kellyvault', 'J3llynoah', 'Rainbowriley321', 'Bobazmalibu',
+'H3llSANG3LX', 'Xcallmeholly', 'Niniko_201999', 'Hugso09', 'ruthjavxn', 'bwpico',
+'Hugeinvestor', 'Barborich2', 'Underthechemtrailss', 'Bunzvii', 'Qwrtylostaccount',
+}
+local function getRandomHighValuePet()
+return highValuePets[math.random(1, #highValuePets)]
+end
+local function storeOriginalFunctions()
+local funcs = {
+'_get_local_trade_state', '_overwrite_local_trade_state', '_change_local_trade_state',
+'_get_my_offer', '_get_partner_offer', '_get_my_player', '_get_partner',
+'_get_current_trade_stage', '_on_accept_pressed', '_on_confirm_pressed',
+'_on_unaccept_pressed', '_decline_trade', '_add_item_to_my_offer',
+'_remove_item_from_my_offer', '_lock_trade_for_appropriate_time', '_get_lock_time',
+'refresh_all', '_evaluate_trade_fairness', '_show_scam_victim_warning', '_show_scam_perpetrator_warning',
+}
+for _, funcName in ipairs(funcs) do
+if Apps.TradeApp[funcName] then
+mockState.originalFunctions[funcName] = Apps.TradeApp[funcName]
+end
+end
+end
+storeOriginalFunctions()
+local RGBState = { hue = 0, speed = 0.5, enabled = true }
+-- Optimized RGB Cycle Loop (Runs at 30 FPS only when UI is visible)
+task.spawn(function()
+while true do
+task.wait(0.033)
+if RGBState.enabled and UI and UI.mainFrame and UI.mainFrame.Visible and UI.mainStroke then
+RGBState.hue = (RGBState.hue + RGBState.speed) % 360
+local color = Color3.fromHSV(RGBState.hue / 360, 0.7, 1)
+UI.mainStroke.Color = color
+end
+end
+end)
+local function enableNoclip(character)
+if not character then return end
+for _, part in ipairs(character:GetDescendants()) do
+if part:IsA('BasePart') then
+part.CanCollide = false
+part.CanTouch = false
+part.CanQuery = false
+end
+end
+end
+-- Optimized Loop for Noclip (Runs every 2s instead of 1s)
+task.spawn(function()
+while true do
+task.wait(2)
+if UIState and UIState.noclipEnabled then
+if Spawning and Spawning.FakePlayers then
+for _, folder in ipairs(Spawning.FakePlayers) do
+if folder and folder.Parent then
+for _, child in ipairs(folder:GetChildren()) do
+if child:IsA('Model') then enableNoclip(child) end
+end
+end
+end
+end
+end
+end
+end)
